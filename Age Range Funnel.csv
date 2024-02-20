@@ -1,0 +1,37 @@
+step,age_range,funnel_step,funnel_count
+1,18-24,App Downloads,1865
+1,25-34,App Downloads,3447
+1,35-44,App Downloads,5181
+1,45-54,App Downloads,1826
+1,Unknown,App Downloads,5304
+1,Null,App Downloads,5985
+2,18-24,Signups,1865
+2,25-34,Signups,3447
+2,35-44,Signups,5181
+2,45-54,Signups,1826
+2,Unknown,Signups,5304
+3,18-24,Ride Requests,1300
+3,25-34,Ride Requests,2425
+3,35-44,Ride Requests,3662
+3,45-54,Ride Requests,1285
+3,Unknown,Ride Requests,3734
+4,18-24,Rides Accepted,1289
+4,25-34,Rides Accepted,2393
+4,35-44,Rides Accepted,3628
+4,45-54,Rides Accepted,1267
+4,Unknown,Rides Accepted,3701
+5,18-24,Pickups,670
+5,25-34,Pickups,1227
+5,35-44,Pickups,1861
+5,45-54,Pickups,630
+5,Unknown,Pickups,1845
+6,18-24,Payment,670
+6,25-34,Payment,1227
+6,35-44,Payment,1861
+6,45-54,Payment,630
+6,Unknown,Payment,1845
+7,18-24,Reviews,473
+7,25-34,Reviews,842
+7,35-44,Reviews,1332
+7,45-54,Reviews,453
+7,Unknown,Reviews,1248

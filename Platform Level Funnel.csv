@@ -1,0 +1,22 @@
+platform,funnel_step,funnel_count
+android,App Downloads,6935
+android,Signups,5148
+android,Ride Requests,3619
+android,Rides Accepted,3580
+android,Pickups,1830
+android,Payment,1830
+android,Reviews,1273
+ios,App Downloads,14290
+ios,Signups,10728
+ios,Ride Requests,7550
+ios,Rides Accepted,7471
+ios,Pickups,3792
+ios,Payment,3792
+ios,Reviews,2651
+web,App Downloads,2383
+web,Signups,1747
+web,Ride Requests,1237
+web,Rides Accepted,1227
+web,Pickups,611
+web,Payment,611
+web,Reviews,424

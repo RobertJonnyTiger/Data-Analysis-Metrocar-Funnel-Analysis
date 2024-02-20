@@ -1,0 +1,628 @@
+-- How many times was the app downloaded?
+SELECT COUNT(download_ts) AS downloads
+FROM app_downloads
+
+-- How many users signed up on the app?
+SELECT COUNT(user_id) AS sign_ups
+FROM signups
+
+-- How many rides were requested through the app?
+SELECT COUNT(*) AS ride_requests
+FROM ride_requests
+WHERE request_ts IS NOT NULL
+
+-- How many rides were requested and completed through the app?
+SELECT 
+  (SELECT COUNT(*) FROM ride_requests) AS ride_requests,
+  (SELECT COUNT(*) FROM ride_requests
+   WHERE pickup_ts IS NOT NULL AND dropoff_ts IS NOT NULL) AS rides_completed;
+
+-- How many rides were requested and how many unique users requested a ride?
+SELECT 
+  COUNT(*) AS total_rides_requested,
+  COUNT(DISTINCT user_id) AS unique_users_requesting_ride
+FROM ride_requests;
+
+-- What is the average time of a ride from pick up to drop off?
+SELECT 
+  ROUND(AVG(EXTRACT(EPOCH FROM (dropoff_ts - pickup_ts)))::NUMERIC, 2) AS average_ride_time_seconds,
+  ROUND(AVG(EXTRACT(EPOCH FROM (dropoff_ts - pickup_ts)) / 60)::NUMERIC, 2) AS average_ride_time_minutes
+FROM ride_requests
+WHERE dropoff_ts IS NOT NULL AND pickup_ts IS NOT NULL;
+
+-- How many rides were accepted by a driver?
+SELECT COUNT(accept_ts) AS rides_accepted
+FROM ride_requests
+WHERE accept_ts IS NOT NULL;
+
+-- How many rides did we successfully collect payments and how much was collected?
+SELECT (SELECT COUNT(*)
+        FROM transactions
+        WHERE charge_status = 'Approved') AS approved_payments,
+        (SELECT ROUND(SUM(purchase_amount_usd)::NUMERIC, 2) AS total_collected_usd
+         FROM transactions WHERE charge_status = 'Approved')
+FROM transactions
+LIMIT 1;
+
+-- How many ride requests happened on each platform?
+SELECT platform, COUNT(request_ts) AS ride_requests
+FROM metrocar
+GROUP BY platform
+ORDER BY 2 DESC
+
+-- What is the drop-off from users signing up to users requesting a ride?
+SELECT 
+  COUNT(DISTINCT user_id) AS signups,
+  (SELECT COUNT(DISTINCT user_id) FROM metrocar WHERE request_ts IS NOT NULL) AS requests,
+  (COUNT(DISTINCT user_id) - (SELECT COUNT(DISTINCT user_id) FROM metrocar WHERE request_ts IS NOT NULL)) AS dropoff_count,
+  ((COUNT(DISTINCT user_id) - (SELECT COUNT(DISTINCT user_id) FROM metrocar WHERE request_ts IS NOT NULL)) / COUNT(DISTINCT user_id)::numeric) AS dropoff_rate
+FROM metrocar
+WHERE signup_ts IS NOT NULL
+LIMIT 1;
+
+-- User Level Funnel By Steps
+WITH FunnelCTE AS (
+    -- App Download
+    SELECT
+        ad.app_download_key::TEXT AS user_id,
+        ad.platform,
+        ad.download_ts AS funnel_ts,
+        'App Download' AS funnel_step
+    FROM
+        app_downloads ad
+    WHERE
+        ad.platform IN ('ios', 'android', 'web')
+    
+    UNION ALL
+    
+    -- Signup
+    SELECT
+        s.user_id::TEXT,
+        s.session_id::TEXT AS app_download_key,
+        s.signup_ts AS funnel_ts,
+        'Signup' AS funnel_step
+    FROM
+        signups s
+    
+    UNION ALL
+    
+    -- Request Ride
+    SELECT
+        rr.user_id::TEXT,
+        s.session_id::TEXT AS app_download_key,
+        rr.request_ts AS funnel_ts,
+        'Request Ride' AS funnel_step
+    FROM
+        ride_requests rr
+    JOIN
+        signups s ON rr.user_id = s.user_id
+    
+    UNION ALL
+    
+    -- Driver Acceptance
+    SELECT
+        rr.user_id::TEXT,
+        s.session_id::TEXT AS app_download_key,
+        rr.accept_ts AS funnel_ts,
+        'Driver Acceptance' AS funnel_step
+    FROM
+        ride_requests rr
+    JOIN
+        signups s ON rr.user_id = s.user_id
+    WHERE
+        rr.accept_ts IS NOT NULL
+    
+    UNION ALL
+    
+    -- Ride
+    SELECT
+        rr.user_id::TEXT,
+        s.session_id::TEXT AS app_download_key,
+        rr.pickup_ts AS funnel_ts,
+        'Ride' AS funnel_step
+    FROM
+        ride_requests rr
+    JOIN
+        signups s ON rr.user_id = s.user_id
+    WHERE
+        rr.pickup_ts IS NOT NULL
+    
+    UNION ALL
+    
+    -- Payment
+    SELECT
+        s.session_id::TEXT AS user_id,
+        s.session_id::TEXT AS app_download_key,
+        t.transaction_ts AS funnel_ts,
+        'Payment' AS funnel_step
+    FROM
+        transactions t
+    JOIN
+        ride_requests rr ON t.ride_id = rr.ride_id
+    JOIN
+        signups s ON rr.user_id = s.user_id
+    
+    UNION ALL
+    
+    -- Review
+    SELECT
+        r.user_id::TEXT,
+        rr.user_id::TEXT AS app_download_key,
+        rr.dropoff_ts AS funnel_ts,
+        'Review' AS funnel_step
+    FROM
+        reviews r
+    JOIN
+        ride_requests rr ON r.ride_id = rr.ride_id
+)
+SELECT
+    funnel_step,
+    COUNT(DISTINCT user_id) AS step_count
+FROM
+    FunnelCTE
+GROUP BY
+    funnel_step
+ORDER BY
+    step_count DESC;
+
+-- Platform Granuality
+WITH FunnelCTE AS (
+  SELECT
+  	platform,
+  	'App Downloads' AS funnel_step,
+  COUNT(DISTINCT app_download_key) AS funnel_count
+  FROM metrocar
+  GROUP BY 1
+  ORDER BY funnel_count DESC
+),
+SignupCTE AS (
+  SELECT
+  platform,
+  	'Signups' AS funnel_step,
+  	COUNT(DISTINCT user_id) AS funnel_count
+  from metrocar
+  WHERE signup_ts IS NOT NULL
+	GROUP BY 1
+  ORDER BY funnel_count DESC
+),
+RideRequestCTE AS (
+    SELECT
+  			platform,
+        'Ride Requests' AS Funnel_Step,
+        COUNT(DISTINCT session_id) AS Funnel_Count
+    FROM metrocar
+    WHERE request_ts IS NOT NULL
+  		GROUP BY 1
+  ORDER BY funnel_count DESC
+),
+RidesAcceptedCTE AS (
+    SELECT
+        platform,
+  			'Rides Accepted' AS Funnel_Step,
+        COUNT(DISTINCT user_id) AS Funnel_Count
+    FROM metrocar
+    WHERE accept_ts IS NOT NULL
+  	GROUP BY 1
+  ORDER BY funnel_count DESC
+),
+PickupsCTE AS (
+    SELECT
+  			platform,
+        'Pickups' AS Funnel_Step,
+        COUNT(DISTINCT user_id) AS Funnel_Count
+    FROM metrocar
+    WHERE pickup_ts IS NOT NULL
+  	GROUP BY 1
+  ORDER BY funnel_count DESC
+),
+PaymentCTE AS (
+    SELECT
+  			platform,
+        'Payment' AS Funnel_Step,
+        COUNT(DISTINCT user_id) AS Funnel_Count
+    FROM metrocar
+    WHERE transaction_ts IS NOT NULL
+  		GROUP BY 1
+  ORDER BY funnel_count DESC
+),
+ReviewsCTE AS (
+    SELECT
+  			platform,
+        'Reviews' AS Funnel_Step,
+        COUNT(DISTINCT user_id) AS Funnel_Count
+    FROM metrocar
+  WHERE review IS NOT NULL
+  	GROUP BY 1
+  ORDER BY funnel_count DESC
+)
+SELECT
+		platform,
+    Funnel_Step,
+    Funnel_Count
+FROM FunnelCTE
+UNION ALL
+SELECT * FROM SignupCTE
+UNION ALL
+SELECT * FROM RideRequestCTE
+UNION ALL
+SELECT * FROM RidesAcceptedCTE
+UNION ALL
+SELECT * FROM PickupsCTE
+UNION ALL
+SELECT * FROM PaymentCTE
+UNION ALL
+SELECT * FROM ReviewsCTE
+ORDER BY platform, funnel_count DESC;
+
+-- Age Range Granulaity
+WITH FunnelCTE AS (
+  SELECT
+  1 AS step,
+  	age_range,
+  	'App Downloads' AS funnel_step,
+  COUNT(DISTINCT app_download_key) AS funnel_count
+  FROM metrocar
+  GROUP BY 1, 2
+  ORDER BY 2
+),
+SignupCTE AS (
+  SELECT
+  2 AS step,
+  age_range,
+  	'Signups' AS funnel_step,
+  	COUNT(DISTINCT user_id) AS funnel_count
+  from metrocar
+  WHERE signup_ts IS NOT NULL
+	GROUP BY 1, 2
+  ORDER BY 2
+),
+RideRequestCTE AS (
+    SELECT
+  			3 AS step,
+  			age_range,
+        'Ride Requests' AS Funnel_Step,
+        COUNT(DISTINCT session_id) AS Funnel_Count
+    FROM metrocar
+    WHERE request_ts IS NOT NULL
+  		GROUP BY 1, 2
+  ORDER BY 2
+),
+RidesAcceptedCTE AS (
+    SELECT
+  			4 as step,
+        age_range,
+  			'Rides Accepted' AS Funnel_Step,
+        COUNT(DISTINCT user_id) AS Funnel_Count
+    FROM metrocar
+    WHERE accept_ts IS NOT NULL
+  	GROUP BY 1, 2
+  ORDER BY 2
+),
+PickupsCTE AS (
+    SELECT
+  			5 as step,
+  			age_range,
+        'Pickups' AS Funnel_Step,
+        COUNT(DISTINCT user_id) AS Funnel_Count
+    FROM metrocar
+    WHERE pickup_ts IS NOT NULL
+  	GROUP BY 1, 2
+  ORDER BY 2
+),
+PaymentCTE AS (
+    SELECT
+  			6 as step,
+  			age_range,
+        'Payment' AS Funnel_Step,
+        COUNT(DISTINCT user_id) AS Funnel_Count
+    FROM metrocar
+    WHERE transaction_ts IS NOT NULL
+  		GROUP BY 1, 2
+  ORDER BY 2
+),
+ReviewsCTE AS (
+    SELECT
+  			7 as step,
+  			age_range,
+        'Reviews' AS Funnel_Step,
+        COUNT(DISTINCT user_id) AS Funnel_Count
+    FROM metrocar
+  WHERE review IS NOT NULL
+  	GROUP BY 1, 2
+  ORDER BY 2
+)
+SELECT
+		step,
+		age_range,
+    Funnel_Step,
+    Funnel_Count
+FROM FunnelCTE
+UNION ALL
+SELECT * FROM SignupCTE
+UNION ALL
+SELECT * FROM RideRequestCTE
+UNION ALL
+SELECT * FROM RidesAcceptedCTE
+UNION ALL
+SELECT * FROM PickupsCTE
+UNION ALL
+SELECT * FROM PaymentCTE
+UNION ALL
+SELECT * FROM ReviewsCTE
+ORDER BY step, age_range, funnel_count DESC;
+
+-- Requests by Hour of Day
+SELECT EXTRACT(HOUR FROM request_ts) AS hour_of_day,
+       COUNT(*) AS request_count, COUNT(transaction_ts) AS transaction_count
+FROM metrocar
+WHERE EXTRACT(HOUR FROM request_ts) IS NOT NULL
+GROUP BY EXTRACT(HOUR FROM request_ts)
+ORDER BY hour_of_day;
+
+-- Group by Funnel Step, Hours of Day (Ride Granuality)
+WITH FunnelCTE AS (
+  SELECT
+  1 AS step,
+  	'App Downloads' AS funnel_step,
+  	EXTRACT(HOUR FROM download_ts) AS hour_of_day,
+       COUNT(download_ts) AS funnel_count
+  FROM metrocar
+  WHERE EXTRACT(HOUR FROM download_ts) IS NOT NULL
+  GROUP BY 1, 2, 3
+  ORDER BY 1, 2, 3
+),
+SignupCTE AS (
+  SELECT
+  2 AS step,
+  	'Signups' AS funnel_step,
+  	EXTRACT(HOUR FROM signup_ts) AS hour_of_day,
+       COUNT(signup_ts) AS funnel_count
+  FROM metrocar
+  WHERE EXTRACT(HOUR FROM signup_ts) IS NOT NULL
+	GROUP BY 1, 2, 3
+  ORDER BY 1, 2, 3
+),
+RideRequestCTE AS (
+    SELECT
+  			3 AS step,
+        'Ride Requests' AS Funnel_Step,
+        EXTRACT(HOUR FROM request_ts) AS hour_of_day,
+       COUNT(request_ts) AS funnel_count
+    FROM metrocar
+    WHERE request_ts IS NOT NULL
+  	GROUP BY 1, 2, 3
+  	ORDER BY 1, 2, 3
+),
+RidesAcceptedCTE AS (
+    SELECT
+  			4 as step,
+  			'Rides Accepted' AS Funnel_Step,
+        EXTRACT(HOUR FROM accept_ts) AS hour_of_day,
+       COUNT(accept_ts) AS funnel_count
+    FROM metrocar
+    WHERE accept_ts IS NOT NULL
+  	GROUP BY 1, 2, 3
+  	ORDER BY 1, 2, 3
+),
+PickupsCTE AS (
+    SELECT
+  			5 as step,
+        'Pickups' AS Funnel_Step,
+        EXTRACT(HOUR FROM pickup_ts) AS hour_of_day,
+       COUNT(pickup_ts) AS funnel_count
+    FROM metrocar
+    WHERE pickup_ts IS NOT NULL
+  	GROUP BY 1, 2, 3
+  	ORDER BY 1, 2, 3
+),
+PaymentCTE AS (
+    SELECT
+  			6 as step,
+        'Payment' AS Funnel_Step,
+        EXTRACT(HOUR FROM transaction_ts) AS hour_of_day,
+       COUNT(transaction_ts) AS funnel_count
+    FROM metrocar
+    WHERE transaction_ts IS NOT NULL
+  	GROUP BY 1, 2, 3
+  	ORDER BY 1, 2, 3
+)
+SELECT
+		step,
+    Funnel_Step,
+    hour_of_day,
+    Funnel_Count
+FROM FunnelCTE
+UNION ALL
+SELECT * FROM SignupCTE
+UNION ALL
+SELECT * FROM RideRequestCTE
+UNION ALL
+SELECT * FROM RidesAcceptedCTE
+UNION ALL
+SELECT * FROM PickupsCTE
+UNION ALL
+SELECT * FROM PaymentCTE
+ORDER BY step, hour_of_day;
+
+-- All Metrics Grouped
+WITH FunnelStage AS (
+  SELECT
+    1 AS step,
+    'App Downloads' AS funnel_step,
+  	platform,
+  	age_range,
+    download_ts AS event_ts,
+    app_download_key AS user_identifier
+  FROM metrocar
+  
+  UNION ALL
+  
+  SELECT
+    2 AS step,
+    'Signups' AS funnel_step,
+    platform,
+  	age_range,
+  	signup_ts AS event_ts,
+    user_id::text AS user_identifier
+  FROM metrocar
+  WHERE signup_ts IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT
+    3 AS step,
+    'Ride Requests' AS funnel_step,
+  	platform,
+  	age_range,
+    request_ts AS event_ts,
+    user_id::text AS user_identifier
+  FROM metrocar
+  WHERE request_ts IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT
+    4 AS step,
+    'Rides Accepted' AS funnel_step,
+  	platform,
+  	age_range,
+    accept_ts AS event_ts,
+    user_id::text AS user_identifier
+  FROM metrocar
+  WHERE accept_ts IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT
+    5 AS step,
+    'Pickups' AS funnel_step,
+  	platform,
+  	age_range,
+    pickup_ts AS event_ts,
+    user_id::text AS user_identifier
+  FROM metrocar
+  WHERE pickup_ts IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT
+    6 AS step,
+    'Payment' AS funnel_step,
+  	platform,
+  	age_range,
+    transaction_ts AS event_ts,
+    user_id::text AS user_identifier
+  FROM metrocar
+  WHERE transaction_ts IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT
+    7 AS step,
+    'Left a Review' AS funnel_step,
+  	platform,
+  	age_range,
+    dropoff_ts AS event_ts,
+    user_id::text AS user_identifier
+  FROM metrocar
+  WHERE review_id IS NOT NULL
+),
+StageTotalCounts AS (
+  SELECT
+    step,
+    COUNT(DISTINCT user_identifier) AS total_count_for_stage
+  FROM FunnelStage
+  GROUP BY step
+)
+SELECT
+  f.step,
+  f.funnel_step,
+  f.platform,
+  f.age_range,
+  CONCAT(EXTRACT(YEAR FROM f.event_ts), '-', LPAD(EXTRACT(MONTH FROM f.event_ts)::text, 2, '0')) AS year_month,
+  COUNT(DISTINCT f.user_identifier) AS funnel_count,
+  s.total_count_for_stage
+FROM FunnelStage f
+JOIN StageTotalCounts s ON f.step = s.step
+GROUP BY f.step, f.funnel_step, f.platform, f.age_range, year_month, s.total_count_for_stage
+ORDER BY f.step, f.funnel_step, f.platform, f.age_range, year_month;
+
+-- Ride Level
+WITH FunnelStage AS (
+  SELECT
+    3 AS step,
+    'Ride Requests' AS funnel_step,
+  	platform,
+  	age_range,
+    request_ts AS event_ts,
+    user_id::text AS user_identifier
+  FROM metrocar
+  WHERE request_ts IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT
+    4 AS step,
+    'Rides Accepted' AS funnel_step,
+  	platform,
+  	age_range,
+    accept_ts AS event_ts,
+    user_id::text AS user_identifier
+  FROM metrocar
+  WHERE accept_ts IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT
+    5 AS step,
+    'Pickups' AS funnel_step,
+  	platform,
+  	age_range,
+    pickup_ts AS event_ts,
+    user_id::text AS user_identifier
+  FROM metrocar
+  WHERE pickup_ts IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT
+    6 AS step,
+    'Payment' AS funnel_step,
+  	platform,
+  	age_range,
+    transaction_ts AS event_ts,
+    user_id::text AS user_identifier
+  FROM metrocar
+  WHERE transaction_ts IS NOT NULL
+  
+  UNION ALL
+  
+  SELECT
+    7 AS step,
+    'Left a Review' AS funnel_step,
+  	platform,
+  	age_range,
+    dropoff_ts AS event_ts,
+    user_id::text AS user_identifier
+  FROM metrocar
+  WHERE review_id IS NOT NULL
+),
+StageTotalCounts AS (
+  SELECT
+    step,
+    COUNT(user_identifier) AS total_count_for_stage
+  FROM FunnelStage
+  GROUP BY step
+)
+SELECT
+  f.step,
+  f.funnel_step,
+  f.platform,
+  f.age_range,
+  CONCAT(EXTRACT(YEAR FROM f.event_ts), '-', LPAD(EXTRACT(MONTH FROM f.event_ts)::text, 2, '0')) AS year_month,
+  COUNT(f.user_identifier) AS funnel_count,
+  s.total_count_for_stage
+FROM FunnelStage f
+JOIN StageTotalCounts s ON f.step = s.step
+GROUP BY f.step, f.funnel_step, f.platform, f.age_range, year_month, s.total_count_for_stage
+ORDER BY f.step, f.funnel_step, f.platform, f.age_range, year_month;
